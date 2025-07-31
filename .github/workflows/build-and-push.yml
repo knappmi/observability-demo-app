@@ -16,7 +16,7 @@ on:
 env:
   REGISTRY_DOCKERHUB: docker.io
   REGISTRY_GHCR: ghcr.io
-  IMAGE_NAME: observability-demo-app/web-app
+  IMAGE_NAME: observability-demo-app
   DOCKERHUB_USERNAME: knappmi14
   GITHUB_USERNAME: knappmi
 
