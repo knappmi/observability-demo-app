@@ -27,6 +27,8 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      actions: read
+      security-events: write
 
     steps:
     - name: Checkout repository
@@ -50,7 +52,7 @@ jobs:
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY_GHCR }}
-        username: ${{ github.actor }}
+        username: ${{ env.GITHUB_USERNAME }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Generate version and tags
@@ -102,12 +104,26 @@ jobs:
         echo "Generated version label: ${VERSION_LABEL}"
         echo "Generated tags: ${TAGS}"
 
-    - name: Generate Docker metadata
-      id: meta
+    - name: Generate Docker metadata for DockerHub
+      id: meta-dockerhub
       uses: docker/metadata-action@v5
       with:
         images: |
           ${{ env.REGISTRY_DOCKERHUB }}/${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=${{ steps.version.outputs.version }}
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+
+    - name: Generate Docker metadata for GHCR
+      id: meta-ghcr
+      uses: docker/metadata-action@v5
+      with:
+        images: |
           ${{ env.REGISTRY_GHCR }}/${{ env.GITHUB_USERNAME }}/${{ env.IMAGE_NAME }}
         tags: |
           type=raw,value=latest,enable={{is_default_branch}}
@@ -127,15 +143,15 @@ jobs:
           app.commit.sha=${{ steps.version.outputs.commit_sha }}
           app.build.timestamp=${{ steps.version.outputs.timestamp }}
 
-    - name: Build and push Docker image
+    - name: Build and push to DockerHub
       uses: docker/build-push-action@v5
       with:
         context: ./web-app
         file: ./web-app/Dockerfile
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+        tags: ${{ steps.meta-dockerhub.outputs.tags }}
+        labels: ${{ steps.meta-dockerhub.outputs.labels }}
         build-args: |
           VERSION=${{ steps.version.outputs.version }}
           VERSION_LABEL=${{ steps.version.outputs.version_label }}
@@ -143,6 +159,22 @@ jobs:
           BUILD_TIMESTAMP=${{ steps.version.outputs.timestamp }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Build and push to GHCR
+      uses: docker/build-push-action@v5
+      with:
+        context: ./web-app
+        file: ./web-app/Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta-ghcr.outputs.tags }}
+        labels: ${{ steps.meta-ghcr.outputs.labels }}
+        build-args: |
+          VERSION=${{ steps.version.outputs.version }}
+          VERSION_LABEL=${{ steps.version.outputs.version_label }}
+          COMMIT_SHA=${{ steps.version.outputs.commit_sha }}
+          BUILD_TIMESTAMP=${{ steps.version.outputs.timestamp }}
+        cache-from: type=gha
 
     - name: Run container security scan
       if: github.event_name != 'pull_request'
@@ -178,6 +210,11 @@ jobs:
         echo "- **GHCR**: \`${{ env.REGISTRY_GHCR }}/${{ env.GITHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### All Tags:" >> $GITHUB_STEP_SUMMARY
+        echo "**DockerHub Tags:**" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.meta-dockerhub.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "**GHCR Tags:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.meta-ghcr.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
