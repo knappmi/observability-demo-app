@@ -205,3 +205,18 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Docker and versioning specific
+.dockerignore
+version.json
+version.yaml
+version.env
+.version
+
+# Security scan results
+trivy-results.sarif
+security-report.json
+
+# Temporary build files
+*.tmp
+*.temp

@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  web-app:
+    build:
+      context: ./web-app
+      dockerfile: Dockerfile
+      args:
+        - VERSION=1.0.0-local
+        - VERSION_LABEL=v1.0.0-local-dev
+        - COMMIT_SHA=local
+        - BUILD_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    ports:
+      - "5000:5000"
+    environment:
+      - VERSION_LABEL=v1.0.0-local-dev
+      - OTEL_SERVICE_VERSION=1.0.0-local
+      - SIM_BAD=false
+      - ERROR_RATE=0.1
+      - LATENCY_SIMULATION=false
+      - MAX_LATENCY=1.0
+      - OUTAGE_SIMULATION=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Optional: Add a testing variant with SLO simulation enabled
+  web-app-with-slo-sim:
+    build:
+      context: ./web-app
+      dockerfile: Dockerfile
+      args:
+        - VERSION=1.0.0-local-sim
+        - VERSION_LABEL=v1.0.0-local-sim
+        - COMMIT_SHA=local
+        - BUILD_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    ports:
+      - "5001:5000"
+    environment:
+      - VERSION_LABEL=v1.0.0-local-sim
+      - OTEL_SERVICE_VERSION=1.0.0-local-sim
+      - SIM_BAD=true
+      - ERROR_RATE=0.3
+      - LATENCY_SIMULATION=true
+      - MAX_LATENCY=2.0
+      - OUTAGE_SIMULATION=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - testing
