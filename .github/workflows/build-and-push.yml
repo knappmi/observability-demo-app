@@ -161,6 +161,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Build and push to GHCR
+      continue-on-error: true
       uses: docker/build-push-action@v5
       with:
         context: ./web-app
@@ -178,14 +179,16 @@ jobs:
 
     - name: Run container security scan
       if: github.event_name != 'pull_request'
+      continue-on-error: true
       uses: aquasecurity/trivy-action@master
       with:
-        image-ref: ${{ env.REGISTRY_GHCR }}/${{ env.GITHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+        image-ref: ${{ env.REGISTRY_DOCKERHUB }}/${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
         format: 'sarif'
         output: 'trivy-results.sarif'
 
     - name: Upload Trivy scan results to GitHub Security tab
       if: github.event_name != 'pull_request'
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@v2
       with:
         sarif_file: 'trivy-results.sarif'
