@@ -1,6 +1,6 @@
 from flask import Flask, request, g
 from threading import Thread
-from prometheus_client import start_http_server, Summary, Counter, Gauge, Histogram
+from prometheus_client import start_http_server, Summary, Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 # OpenTelemetry imports for manual instrumentation
 from opentelemetry import trace, metrics
@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SIM_BAD = os.getenv("SIM_BAD", "false").lower() == "true"
-ERROR_RATE = float(os.getenv("ERROR_RATE", "0.2"))  # Default 20% error rate when SIM_BAD is true
+ERROR_RATE_ENV = float(os.getenv("ERROR_RATE", "0.2"))  # Default 20% error rate when SIM_BAD is true
 LATENCY_SIMULATION = os.getenv("LATENCY_SIMULATION", "false").lower() == "true"
 MAX_LATENCY = float(os.getenv("MAX_LATENCY", "2.0"))  # Default 2 seconds max latency
 OUTAGE_SIMULATION = os.getenv("OUTAGE_SIMULATION", "false").lower() == "true"
@@ -75,6 +75,83 @@ def setup_opentelemetry():
 # Initialize OpenTelemetry and get tracer
 tracer = setup_opentelemetry()
 
+# Prometheus Metrics Definitions
+REQUEST_COUNT = Counter(
+    'flask_requests_total',
+    'Total number of HTTP requests',
+    ['method', 'endpoint', 'status_code', 'version']
+)
+
+REQUEST_DURATION = Histogram(
+    'flask_request_duration_seconds',
+    'HTTP request duration in seconds',
+    ['method', 'endpoint', 'version'],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+)
+
+REQUEST_DURATION_MS = Histogram(
+    'flask_request_duration_milliseconds',
+    'HTTP request duration in milliseconds',
+    ['method', 'endpoint', 'version'],
+    buckets=(5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+)
+
+ACTIVE_REQUESTS = Gauge(
+    'flask_active_requests',
+    'Number of active HTTP requests',
+    ['method', 'endpoint']
+)
+
+ERROR_RATE_GAUGE = Gauge(
+    'flask_error_rate',
+    'Current error rate (0.0-1.0)',
+    ['version']
+)
+
+SLO_VIOLATIONS = Counter(
+    'slo_violations_total',
+    'Total number of SLO violations',
+    ['violation_type', 'severity', 'endpoint']
+)
+
+HEALTH_STATUS = Gauge(
+    'service_health_status',
+    'Service health status (1=healthy, 0=unhealthy)',
+    ['version']
+)
+
+LATENCY_CATEGORY = Counter(
+    'latency_category_total',
+    'Count of requests by latency category',
+    ['category', 'endpoint', 'version']
+)
+
+API_RESPONSES = Counter(
+    'api_responses_total',
+    'Total API responses',
+    ['endpoint', 'status', 'version']
+)
+
+BUSINESS_EVENTS = Counter(
+    'business_events_total',
+    'Total business events',
+    ['event_name', 'page', 'version']
+)
+
+# SLO Configuration Metrics
+SLO_CONFIG_GAUGE = Gauge(
+    'slo_configuration',
+    'SLO configuration values',
+    ['config_type', 'version']
+)
+
+# Set initial SLO configuration values
+SLO_CONFIG_GAUGE.labels(config_type='error_rate', version=SERVICE_VERSION).set(ERROR_RATE_ENV)
+SLO_CONFIG_GAUGE.labels(config_type='max_latency', version=SERVICE_VERSION).set(MAX_LATENCY)
+SLO_CONFIG_GAUGE.labels(config_type='sim_bad', version=SERVICE_VERSION).set(1 if SIM_BAD else 0)
+SLO_CONFIG_GAUGE.labels(config_type='latency_simulation', version=SERVICE_VERSION).set(1 if LATENCY_SIMULATION else 0)
+SLO_CONFIG_GAUGE.labels(config_type='outage_simulation', version=SERVICE_VERSION).set(1 if OUTAGE_SIMULATION else 0)
+
 class StructuredLogger:
     """Structured logging for AI training data"""
     
@@ -108,7 +185,7 @@ class StructuredLogger:
             },
             "slo_config": {
                 "sim_bad": SIM_BAD,
-                "error_rate": ERROR_RATE,
+                "error_rate": ERROR_RATE_ENV,
                 "latency_simulation": LATENCY_SIMULATION,
                 "outage_simulation": OUTAGE_SIMULATION
             }
@@ -131,6 +208,10 @@ def before_request():
     g.start_time = time.time()
     g.correlation_id = str(uuid.uuid4())
     
+    # Increment active requests gauge
+    endpoint = request.endpoint or 'unknown'
+    ACTIVE_REQUESTS.labels(method=request.method, endpoint=endpoint).inc()
+    
     # Log request start for AI training
     StructuredLogger.log_event(
         "request_started",
@@ -146,6 +227,60 @@ def after_request(response):
     """Log request completion with AI-relevant metrics"""
     if hasattr(g, 'start_time'):
         duration = time.time() - g.start_time
+        endpoint = request.endpoint or 'unknown'
+        
+        # Decrement active requests gauge
+        ACTIVE_REQUESTS.labels(method=request.method, endpoint=endpoint).dec()
+        
+        # Record metrics
+        REQUEST_COUNT.labels(
+            method=request.method,
+            endpoint=endpoint,
+            status_code=response.status_code,
+            version=SERVICE_VERSION
+        ).inc()
+        
+        REQUEST_DURATION.labels(
+            method=request.method,
+            endpoint=endpoint,
+            version=SERVICE_VERSION
+        ).observe(duration)
+        
+        REQUEST_DURATION_MS.labels(
+            method=request.method,
+            endpoint=endpoint,
+            version=SERVICE_VERSION
+        ).observe(duration * 1000)
+        
+        # Record latency category
+        if duration < 0.2:
+            category = "fast"
+        elif duration < 1.0:
+            category = "slow"
+        else:
+            category = "very_slow"
+            
+        LATENCY_CATEGORY.labels(
+            category=category,
+            endpoint=endpoint,
+            version=SERVICE_VERSION
+        ).inc()
+        
+        # Record API response status
+        status = "success" if 200 <= response.status_code < 400 else "error"
+        API_RESPONSES.labels(
+            endpoint=endpoint,
+            status=status,
+            version=SERVICE_VERSION
+        ).inc()
+        
+        # Update error rate (simple moving calculation)
+        if endpoint != 'metrics':  # Don't count metrics endpoint
+            current_error_rate = ERROR_RATE_GAUGE.labels(version=SERVICE_VERSION)._value._value
+            is_error = response.status_code >= 400
+            # Simple exponential moving average with alpha=0.1
+            new_rate = current_error_rate * 0.9 + (1.0 if is_error else 0.0) * 0.1
+            ERROR_RATE_GAUGE.labels(version=SERVICE_VERSION).set(new_rate)
         
         # Log request completion for AI training
         StructuredLogger.log_event(
@@ -171,7 +306,7 @@ def root():
         # Enhanced span attributes with correlation
         span.set_attribute("correlation_id", correlation_id)
         span.set_attribute("slo.sim_bad", SIM_BAD)
-        span.set_attribute("slo.error_rate", ERROR_RATE)
+        span.set_attribute("slo.error_rate", ERROR_RATE_ENV)
         span.set_attribute("service.version", SERVICE_VERSION)
         span.set_attribute("version.label", VERSION_LABEL)
         
@@ -188,6 +323,13 @@ def root():
             latency_category="fast" if latency < 0.2 else "slow" if latency < 1.0 else "very_slow"
         )
         
+        # Record business event metric
+        BUSINESS_EVENTS.labels(
+            event_name="page_view",
+            page="root",
+            version=SERVICE_VERSION
+        ).inc()
+        
         # Check if service should fail
         health_result = health_sim()
         if not health_result:
@@ -203,6 +345,13 @@ def root():
                 expected_success=True,
                 actual_success=False
             )
+            
+            # Record SLO violation metric
+            SLO_VIOLATIONS.labels(
+                violation_type="service_failure",
+                severity="critical",
+                endpoint="root"
+            ).inc()
             
             return f"Service Unavailable [{VERSION_LABEL}]", 503
         
@@ -240,6 +389,9 @@ def health():
             endpoint="health"
         )
         
+        # Update health status metric
+        HEALTH_STATUS.labels(version=SERVICE_VERSION).set(1 if is_healthy else 0)
+        
         if is_healthy:
             span.set_attribute("http.status_code", 200)
             return f"OK [{VERSION_LABEL}]", 200
@@ -248,10 +400,11 @@ def health():
             span.set_attribute("http.status_code", 500)
             return f"ERROR [{VERSION_LABEL}]", 500
 
-# Promtheus metrics
+# Prometheus metrics endpoint
 @app.route("/metrics")
 def metrics():
-    return "# HELP flask_requests_total Total number of requests\n# TYPE flask_requests_total counter\nflask_requests_total 0\n"
+    """Return Prometheus metrics in the standard format"""
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
 # Version endpoint for canary identification
 @app.route("/version")
@@ -265,7 +418,7 @@ def version():
             "label": VERSION_LABEL,
             "slo_config": {
                 "sim_bad": SIM_BAD,
-                "error_rate": ERROR_RATE,
+                "error_rate": ERROR_RATE_ENV,
                 "latency_simulation": LATENCY_SIMULATION,
                 "outage_simulation": OUTAGE_SIMULATION
             },
@@ -285,7 +438,7 @@ def slo_config():
         },
         "slo_simulation": {
             "sim_bad": SIM_BAD,
-            "error_rate": ERROR_RATE,
+            "error_rate": ERROR_RATE_ENV,
             "latency_simulation": LATENCY_SIMULATION,
             "max_latency": MAX_LATENCY,
             "outage_simulation": OUTAGE_SIMULATION
@@ -435,10 +588,10 @@ def simulate_error_rate():
     """Simulate error rate based on ERROR_RATE environment variable"""
     with tracer.start_as_current_span("simulate_error_rate") as span:
         if SIM_BAD:
-            should_error = random.random() < ERROR_RATE
+            should_error = random.random() < ERROR_RATE_ENV
             span.set_attribute("error.simulation_enabled", True)
             span.set_attribute("error.should_fail", should_error)
-            span.set_attribute("error.configured_rate", ERROR_RATE)
+            span.set_attribute("error.configured_rate", ERROR_RATE_ENV)
             return should_error
         span.set_attribute("error.simulation_enabled", False)
         return False
@@ -478,6 +631,13 @@ def health_sim():
                 outage_simulation_enabled=OUTAGE_SIMULATION
             )
             
+            # Record SLO violation metric
+            SLO_VIOLATIONS.labels(
+                violation_type="outage",
+                severity="critical",
+                endpoint="system"
+            ).inc()
+            
             return False
         
         # Check for error rate simulation
@@ -489,9 +649,16 @@ def health_sim():
                 "system_failure",
                 failure_type="error_rate",
                 severity="medium",
-                configured_error_rate=ERROR_RATE,
+                configured_error_rate=ERROR_RATE_ENV,
                 sim_bad_enabled=SIM_BAD
             )
+            
+            # Record SLO violation metric
+            SLO_VIOLATIONS.labels(
+                violation_type="error_rate",
+                severity="medium", 
+                endpoint="system"
+            ).inc()
             
             return False
         
