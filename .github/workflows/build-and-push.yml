@@ -64,6 +64,34 @@ jobs:
         # Get current timestamp
         TIMESTAMP=$(date +%Y%m%d-%H%M%S)
         
+        # Check if this is a "bad" configuration tag
+        SIM_BAD="false"
+        ERROR_RATE="0.1"
+        LATENCY_SIMULATION="false"
+        OUTAGE_SIMULATION="false"
+        MAX_LATENCY="1.0"
+        CONFIG_SUFFIX=""
+        
+        if [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == *"-bad"* ]]; then
+          # Bad configuration tag detected
+          SIM_BAD="true"
+          ERROR_RATE="0.3"  # 30% error rate
+          LATENCY_SIMULATION="true"
+          OUTAGE_SIMULATION="true"
+          MAX_LATENCY="3.0"  # 3 second max latency
+          CONFIG_SUFFIX="-bad"
+          echo "Building with BAD SLO configuration for testing/demo purposes"
+        elif [[ "${{ github.ref_type }}" == "tag" && "${{ github.ref_name }}" == *"-chaos"* ]]; then
+          # Chaos configuration - even worse
+          SIM_BAD="true"
+          ERROR_RATE="0.5"  # 50% error rate
+          LATENCY_SIMULATION="true"
+          OUTAGE_SIMULATION="true"
+          MAX_LATENCY="5.0"  # 5 second max latency
+          CONFIG_SUFFIX="-chaos"
+          echo "Building with CHAOS configuration for extreme testing"
+        fi
+        
         # Determine version based on event type and branch
         if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
           # Main branch - use semantic versioning with commit
@@ -80,7 +108,11 @@ jobs:
           TAG_NAME=$(echo ${{ github.ref_name }} | sed 's/^v//')
           VERSION="${TAG_NAME}"
           VERSION_LABEL="v${TAG_NAME}"
-          TAGS="${TAG_NAME},latest"
+          if [[ "${CONFIG_SUFFIX}" != "" ]]; then
+            TAGS="${TAG_NAME},${CONFIG_SUFFIX#-}"  # Add config-specific tag (bad/chaos)
+          else
+            TAGS="${TAG_NAME},latest"
+          fi
         elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
           # Pull request - use PR number
           VERSION="1.0.0-pr${{ github.event.number }}-${COMMIT_SHA}"
@@ -99,10 +131,17 @@ jobs:
         echo "tags=${TAGS}" >> $GITHUB_OUTPUT
         echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
         echo "timestamp=${TIMESTAMP}" >> $GITHUB_OUTPUT
+        echo "sim_bad=${SIM_BAD}" >> $GITHUB_OUTPUT
+        echo "error_rate=${ERROR_RATE}" >> $GITHUB_OUTPUT
+        echo "latency_simulation=${LATENCY_SIMULATION}" >> $GITHUB_OUTPUT
+        echo "outage_simulation=${OUTAGE_SIMULATION}" >> $GITHUB_OUTPUT
+        echo "max_latency=${MAX_LATENCY}" >> $GITHUB_OUTPUT
+        echo "config_suffix=${CONFIG_SUFFIX}" >> $GITHUB_OUTPUT
         
         echo "Generated version: ${VERSION}"
         echo "Generated version label: ${VERSION_LABEL}"
         echo "Generated tags: ${TAGS}"
+        echo "SLO Config - SIM_BAD: ${SIM_BAD}, ERROR_RATE: ${ERROR_RATE}, LATENCY_SIM: ${LATENCY_SIMULATION}"
 
     - name: Generate Docker metadata for DockerHub
       id: meta-dockerhub
@@ -157,6 +196,11 @@ jobs:
           VERSION_LABEL=${{ steps.version.outputs.version_label }}
           COMMIT_SHA=${{ steps.version.outputs.commit_sha }}
           BUILD_TIMESTAMP=${{ steps.version.outputs.timestamp }}
+          SIM_BAD=${{ steps.version.outputs.sim_bad }}
+          ERROR_RATE=${{ steps.version.outputs.error_rate }}
+          LATENCY_SIMULATION=${{ steps.version.outputs.latency_simulation }}
+          OUTAGE_SIMULATION=${{ steps.version.outputs.outage_simulation }}
+          MAX_LATENCY=${{ steps.version.outputs.max_latency }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -174,6 +218,11 @@ jobs:
           VERSION_LABEL=${{ steps.version.outputs.version_label }}
           COMMIT_SHA=${{ steps.version.outputs.commit_sha }}
           BUILD_TIMESTAMP=${{ steps.version.outputs.timestamp }}
+          SIM_BAD=${{ steps.version.outputs.sim_bad }}
+          ERROR_RATE=${{ steps.version.outputs.error_rate }}
+          LATENCY_SIMULATION=${{ steps.version.outputs.latency_simulation }}
+          OUTAGE_SIMULATION=${{ steps.version.outputs.outage_simulation }}
+          MAX_LATENCY=${{ steps.version.outputs.max_latency }}
         cache-from: type=gha
 
     - name: Run container security scan
@@ -206,6 +255,20 @@ jobs:
         echo "| Event Type | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "| Branch/Tag | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### SLO Configuration:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Setting | Value | Description |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------|-------|-------------|" >> $GITHUB_STEP_SUMMARY
+        echo "| SIM_BAD | \`${{ steps.version.outputs.sim_bad }}\` | Master switch for bad SLO simulations |" >> $GITHUB_STEP_SUMMARY
+        echo "| ERROR_RATE | \`${{ steps.version.outputs.error_rate }}\` | Probability of returning errors (0.0-1.0) |" >> $GITHUB_STEP_SUMMARY
+        echo "| LATENCY_SIMULATION | \`${{ steps.version.outputs.latency_simulation }}\` | Enable artificial latency delays |" >> $GITHUB_STEP_SUMMARY
+        echo "| OUTAGE_SIMULATION | \`${{ steps.version.outputs.outage_simulation }}\` | Enable complete service outages |" >> $GITHUB_STEP_SUMMARY
+        echo "| MAX_LATENCY | \`${{ steps.version.outputs.max_latency }}\` | Maximum latency in seconds |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ steps.version.outputs.sim_bad }}" == "true" ]]; then
+          echo "⚠️ **WARNING**: This image is configured with BAD SLO settings for testing/demo purposes!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
         echo "### Published Images:" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "- **Docker Hub**: \`${{ env.REGISTRY_DOCKERHUB }}/${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY

@@ -249,6 +249,75 @@ GitHub Actions automatically:
 - **feature branches**: Feature builds (`1.0.0-feat-name-abc1234`)
 - **git tags**: Release versions (`v1.0.0`)
 
+## Bad Configuration Tags 🚨
+
+This project supports special "bad configuration" tags that automatically build Docker images with pre-configured problematic SLO settings. These are perfect for testing observability tools, alerting systems, and training scenarios.
+
+### Quick Usage
+
+Create and push tags with special suffixes to get pre-configured problematic images:
+
+```bash
+# Bad configuration (30% error rate, latency issues)
+git tag v1.0.0-bad
+git push origin v1.0.0-bad
+
+# Chaos configuration (50% error rate, extreme latency)  
+git tag v1.0.0-chaos
+git push origin v1.0.0-chaos
+
+# Normal configuration (good SLO settings)
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### Available Images
+
+After the GitHub Actions build completes, images are published to:
+
+- **DockerHub**: `knappmi14/observability-demo-app:TAG`
+- **GHCR**: `ghcr.io/knappmi/observability-demo-app:TAG`
+
+#### Configuration Presets
+
+| Tag Pattern | Error Rate | Latency Sim | Outage Sim | Max Latency | Use Case |
+|-------------|------------|-------------|------------|-------------|----------|
+| `v*` (normal) | 10% | ❌ | ❌ | 1.0s | Production-like |
+| `v*-bad` | 30% | ✅ | ✅ | 3.0s | Testing alerts |
+| `v*-chaos` | 50% | ✅ | ✅ | 5.0s | Extreme testing |
+
+### Example Usage
+
+```bash
+# Test different configurations side by side
+docker run -p 5000:5000 knappmi14/observability-demo-app:latest     # Good
+docker run -p 5001:5000 knappmi14/observability-demo-app:bad        # Bad
+docker run -p 5002:5000 knappmi14/observability-demo-app:chaos      # Chaos
+
+# Verify configurations
+curl http://localhost:5000/slo-config  # Normal config
+curl http://localhost:5001/slo-config  # Bad config  
+curl http://localhost:5002/slo-config  # Chaos config
+```
+
+### Helper Scripts
+
+Use the provided scripts to create tags easily:
+
+**PowerShell (Windows):**
+```powershell
+.\scripts\create-bad-tag.ps1 -Version 1.0.0 -ConfigType bad
+.\scripts\create-bad-tag.ps1 -Version 1.0.0 -ConfigType chaos
+```
+
+**Bash (Linux/Mac):**
+```bash
+./scripts/create-bad-tag.sh 1.0.0 bad
+./scripts/create-bad-tag.sh 1.0.0 chaos
+```
+
+📖 **Full Documentation**: [docs/BAD_CONFIG_TAGS.md](docs/BAD_CONFIG_TAGS.md)
+
 ## Development
 
 ### Project Structure
