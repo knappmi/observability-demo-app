@@ -77,33 +77,33 @@ tracer = setup_opentelemetry()
 
 # Prometheus Metrics Definitions
 REQUEST_COUNT = Counter(
-    'flask_requests_total',
+    'webapp_requests_total',
     'Total number of HTTP requests',
     ['method', 'endpoint', 'status_code', 'version']
 )
 
 REQUEST_DURATION = Histogram(
-    'flask_request_duration_seconds',
+    'webapp_request_duration_seconds',
     'HTTP request duration in seconds',
     ['method', 'endpoint', 'version'],
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 )
 
 REQUEST_DURATION_MS = Histogram(
-    'flask_request_duration_milliseconds',
+    'webapp_request_duration_milliseconds',
     'HTTP request duration in milliseconds',
     ['method', 'endpoint', 'version'],
     buckets=(5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 )
 
 ACTIVE_REQUESTS = Gauge(
-    'flask_active_requests',
+    'webapp_active_requests',
     'Number of active HTTP requests',
     ['method', 'endpoint']
 )
 
 ERROR_RATE_GAUGE = Gauge(
-    'flask_error_rate',
+    'webapp_error_rate',
     'Current error rate (0.0-1.0)',
     ['version']
 )
