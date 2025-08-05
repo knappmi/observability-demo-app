@@ -154,9 +154,8 @@ jobs:
           type=raw,value=${{ steps.version.outputs.version }}
           type=ref,event=branch
           type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
+          type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
+          type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
 
     - name: Generate Docker metadata for GHCR
       id: meta-ghcr
@@ -169,9 +168,8 @@ jobs:
           type=raw,value=${{ steps.version.outputs.version }}
           type=ref,event=branch
           type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
+          type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
+          type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
         labels: |
           org.opencontainers.image.title=Observability Demo Web App
           org.opencontainers.image.description=Flask web application for observability demonstrations
