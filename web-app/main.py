@@ -7,9 +7,54 @@ from opentelemetry import trace, metrics
 from opentelemetry.trace import Status, StatusCode
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SpanExporter, SpanExportResult
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
+
+# Custom structured span exporter for consistent JSON logging
+class StructuredSpanExporter(SpanExporter):
+    """Custom span exporter that outputs structured JSON logs"""
+    
+    def export(self, spans):
+        """Export spans as structured JSON logs"""
+        for span in spans:
+            span_data = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": "INFO",
+                "logger": "observability-demo-app",
+                "event_type": "opentelemetry_span",
+                "message": f"Span: {span.name}",
+                "description": f"OpenTelemetry span completed: {span.name}",
+                "trace": {
+                    "trace_id": hex(span.context.trace_id),
+                    "span_id": hex(span.context.span_id),
+                    "parent_span_id": hex(span.parent.span_id) if span.parent else None,
+                    "span_name": span.name,
+                    "start_time": span.start_time,
+                    "end_time": span.end_time,
+                    "duration_ns": span.end_time - span.start_time if span.end_time else None,
+                    "status": {
+                        "code": span.status.status_code.name if span.status else "OK",
+                        "description": span.status.description if span.status else None
+                    }
+                },
+                "attributes": dict(span.attributes) if span.attributes else {},
+                "service": {
+                    "name": SERVICE_NAME,
+                    "version": SERVICE_VERSION,
+                    "environment": ENVIRONMENT,
+                    "version_label": VERSION_LABEL
+                }
+            }
+            
+            # Log as structured JSON
+            logger.info(json.dumps(span_data, default=str))
+        
+        return SpanExportResult.SUCCESS
+    
+    def shutdown(self):
+        """Shutdown the exporter"""
+        pass
 
 # Get ENV variables for SLO simulation
 import os
@@ -20,13 +65,16 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-# Configure structured logging for AI training
+# Configure structured logging for AI training - disable Flask's default logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(message)s',  # JSON format only
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+# Disable Flask's default request logging to avoid mixed formats
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 SIM_BAD = os.getenv("SIM_BAD", "false").lower() == "true"
 ERROR_RATE_ENV = float(os.getenv("ERROR_RATE", "0.2"))  # Default 20% error rate when SIM_BAD is true
@@ -42,7 +90,7 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
 
 # Properly initialize OpenTelemetry
 def setup_opentelemetry():
-    """Configure OpenTelemetry with proper trace and span ID generation"""
+    """Configure OpenTelemetry with proper trace and span ID generation and structured logging"""
     # Create resource with service information
     resource = Resource.create({
         "service.name": SERVICE_NAME,
@@ -55,10 +103,10 @@ def setup_opentelemetry():
     # Create and configure tracer provider
     tracer_provider = TracerProvider(resource=resource)
     
-    # Add console exporter for local development (you can see traces in logs)
-    console_exporter = ConsoleSpanExporter()
-    console_processor = BatchSpanProcessor(console_exporter)
-    tracer_provider.add_span_processor(console_processor)
+    # Add our custom structured span exporter for consistent JSON logging
+    structured_exporter = StructuredSpanExporter()
+    structured_processor = BatchSpanProcessor(structured_exporter)
+    tracer_provider.add_span_processor(structured_processor)
     
     # Optionally add OTLP exporter if OTEL_EXPORTER_OTLP_ENDPOINT is set
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -153,7 +201,7 @@ SLO_CONFIG_GAUGE.labels(config_type='latency_simulation', version=SERVICE_VERSIO
 SLO_CONFIG_GAUGE.labels(config_type='outage_simulation', version=SERVICE_VERSION).set(1 if OUTAGE_SIMULATION else 0)
 
 class StructuredLogger:
-    """Structured logging for AI training data"""
+    """Enhanced structured logging for AI training with comprehensive context"""
     
     @staticmethod
     def get_correlation_id():
@@ -164,15 +212,18 @@ class StructuredLogger:
     
     @staticmethod
     def log_event(event_type, **kwargs):
-        """Log structured events optimized for AI training"""
+        """Log structured events optimized for AI training with enhanced context"""
         correlation_id = StructuredLogger.get_correlation_id()
         
         # Get current span context for trace correlation
         current_span = trace.get_current_span()
         span_context = current_span.get_span_context() if current_span else None
         
+        # Base event structure with comprehensive metadata
         event = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": "INFO",
+            "logger": "observability-demo-app",
             "event_type": event_type,
             "correlation_id": correlation_id,
             "trace_id": hex(span_context.trace_id) if span_context else None,
@@ -181,30 +232,100 @@ class StructuredLogger:
                 "name": SERVICE_NAME,
                 "version": SERVICE_VERSION,
                 "environment": ENVIRONMENT,
-                "version_label": VERSION_LABEL
+                "version_label": VERSION_LABEL,
+                "instance_id": os.getenv("HOSTNAME", "unknown")
             },
             "slo_config": {
                 "sim_bad": SIM_BAD,
                 "error_rate": ERROR_RATE_ENV,
                 "latency_simulation": LATENCY_SIMULATION,
-                "outage_simulation": OUTAGE_SIMULATION
+                "outage_simulation": OUTAGE_SIMULATION,
+                "max_latency": MAX_LATENCY
             }
         }
+        
+        # Add request context if available
+        if request:
+            event["request"] = {
+                "method": request.method,
+                "path": request.path,
+                "endpoint": request.endpoint,
+                "remote_addr": request.remote_addr,
+                "user_agent": request.headers.get('User-Agent', 'unknown'),
+                "content_type": request.content_type,
+                "content_length": request.content_length or 0,
+                "args": dict(request.args) if request.args else {}
+            }
         
         # Add custom event data
         event.update(kwargs)
         
         # Log as JSON for AI processing
-        logger.info(json.dumps(event))
+        logger.info(json.dumps(event, default=str))
         
         return correlation_id
+    
+    @staticmethod
+    def log_http_request(method, path, endpoint, status_code, duration_ms, **kwargs):
+        """Specialized logging for HTTP requests with full context"""
+        StructuredLogger.log_event(
+            "http_request",
+            message=f"HTTP {method} {path} -> {status_code} ({duration_ms:.2f}ms)",
+            description=f"HTTP request to {endpoint or 'unknown'} endpoint completed",
+            http={
+                "method": method,
+                "path": path,
+                "endpoint": endpoint,
+                "status_code": status_code,
+                "status_category": "success" if 200 <= status_code < 400 else "client_error" if 400 <= status_code < 500 else "server_error",
+                "duration_ms": duration_ms,
+                "duration_seconds": duration_ms / 1000
+            },
+            performance={
+                "latency_category": "fast" if duration_ms < 200 else "medium" if duration_ms < 1000 else "slow",
+                "is_slo_compliant": duration_ms < 1000 and status_code < 500
+            },
+            **kwargs
+        )
+    
+    @staticmethod
+    def log_business_event(event_name, description, **kwargs):
+        """Specialized logging for business events"""
+        StructuredLogger.log_event(
+            "business_event",
+            message=f"Business event: {event_name}",
+            description=description,
+            business={
+                "event_name": event_name,
+                **kwargs
+            }
+        )
+    
+    @staticmethod
+    def log_system_event(event_name, description, severity="info", **kwargs):
+        """Specialized logging for system events"""
+        StructuredLogger.log_event(
+            "system_event",
+            message=f"System event: {event_name}",
+            description=description,
+            system={
+                "event_name": event_name,
+                "severity": severity,
+                **kwargs
+            }
+        )
 
 # Basic flask app to test canary deployment
 app = Flask("python-web-app")
 
+# Disable Flask's default request logging to prevent mixed log formats
+app.logger.disabled = True
+log = logging.getLogger('werkzeug')
+log.disabled = True
+
 @app.before_request
 def before_request():
-    """Initialize request context for AI telemetry"""
+    """Initialize request context for AI telemetry with comprehensive logging"""
     g.start_time = time.time()
     g.correlation_id = str(uuid.uuid4())
     
@@ -212,21 +333,34 @@ def before_request():
     endpoint = request.endpoint or 'unknown'
     ACTIVE_REQUESTS.labels(method=request.method, endpoint=endpoint).inc()
     
-    # Log request start for AI training
+    # Log detailed request start for AI training
     StructuredLogger.log_event(
         "request_started",
-        method=request.method,
-        path=request.path,
-        endpoint=request.endpoint,
-        user_agent=request.headers.get('User-Agent', 'unknown'),
-        content_length=request.content_length or 0
+        message=f"Incoming {request.method} request to {request.path}",
+        description=f"HTTP request initiated to {endpoint} endpoint",
+        request_details={
+            "method": request.method,
+            "path": request.path,
+            "endpoint": endpoint,
+            "query_params": dict(request.args) if request.args else {},
+            "content_length": request.content_length or 0,
+            "remote_addr": request.remote_addr,
+            "user_agent": request.headers.get('User-Agent', 'unknown'),
+            "accept": request.headers.get('Accept', 'unknown'),
+            "content_type": request.content_type
+        },
+        timing={
+            "request_start_time": g.start_time,
+            "request_id": g.correlation_id
+        }
     )
 
 @app.after_request  
 def after_request(response):
-    """Log request completion with AI-relevant metrics"""
+    """Log request completion with comprehensive AI-relevant metrics and context"""
     if hasattr(g, 'start_time'):
         duration = time.time() - g.start_time
+        duration_ms = duration * 1000
         endpoint = request.endpoint or 'unknown'
         
         # Decrement active requests gauge
@@ -250,7 +384,7 @@ def after_request(response):
             method=request.method,
             endpoint=endpoint,
             version=SERVICE_VERSION
-        ).observe(duration * 1000)
+        ).observe(duration_ms)
         
         # Record latency category
         if duration < 0.2:
@@ -282,17 +416,29 @@ def after_request(response):
             new_rate = current_error_rate * 0.9 + (1.0 if is_error else 0.0) * 0.1
             ERROR_RATE_GAUGE.labels(version=SERVICE_VERSION).set(new_rate)
         
-        # Log request completion for AI training
-        StructuredLogger.log_event(
-            "request_completed",
+        # Use specialized HTTP request logging with full context
+        StructuredLogger.log_http_request(
             method=request.method,
             path=request.path,
-            endpoint=request.endpoint,
+            endpoint=endpoint,
             status_code=response.status_code,
-            duration_seconds=duration,
-            duration_ms=duration * 1000,
-            response_size=response.content_length or 0,
-            success=200 <= response.status_code < 400
+            duration_ms=duration_ms,
+            response_details={
+                "size_bytes": response.content_length or 0,
+                "content_type": response.content_type,
+                "headers": dict(response.headers),
+                "status_category": "success" if 200 <= response.status_code < 400 else "client_error" if 400 <= response.status_code < 500 else "server_error"
+            },
+            metrics={
+                "is_success": 200 <= response.status_code < 400,
+                "is_error": response.status_code >= 400,
+                "latency_category": category,
+                "exceeds_slo": duration_ms > 1000 or response.status_code >= 500
+            },
+            business_context={
+                "endpoint_type": "health" if endpoint == "health" else "metrics" if endpoint == "metrics" else "api" if endpoint in ["users", "version"] else "web",
+                "user_facing": endpoint not in ["health", "metrics"]
+            }
         )
     
     return response
@@ -314,13 +460,18 @@ def root():
         latency = simulate_latency()
         span.set_attribute("response.latency_ms", latency * 1000)
         
-        # Log business event for AI training
-        StructuredLogger.log_event(
-            "business_event",
+        # Log business event for AI training using specialized method
+        StructuredLogger.log_business_event(
             event_name="page_view",
+            description="User viewed the root application page",
             page="root",
             latency_ms=latency * 1000,
-            latency_category="fast" if latency < 0.2 else "slow" if latency < 1.0 else "very_slow"
+            latency_category="fast" if latency < 0.2 else "slow" if latency < 1.0 else "very_slow",
+            user_experience={
+                "page_type": "landing",
+                "load_time_acceptable": latency < 1.0,
+                "performance_tier": "excellent" if latency < 0.1 else "good" if latency < 0.5 else "poor"
+            }
         )
         
         # Record business event metric
@@ -336,14 +487,21 @@ def root():
             span.set_status(Status(StatusCode.ERROR, "Service simulation failure"))
             span.set_attribute("response.status", "error")
             
-            # Log SLO violation for AI training
-            StructuredLogger.log_event(
-                "slo_violation",
+            # Log SLO violation for AI training using specialized method
+            StructuredLogger.log_system_event(
+                event_name="slo_violation",
+                description="Service Level Objective violated: service failure during root endpoint request",
+                severity="critical",
                 violation_type="service_failure",
                 endpoint="root",
                 latency_ms=latency * 1000,
                 expected_success=True,
-                actual_success=False
+                actual_success=False,
+                impact={
+                    "user_facing": True,
+                    "availability_affected": True,
+                    "slo_breach": True
+                }
             )
             
             # Record SLO violation metric
